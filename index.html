@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Прогноз затоплення за рельєфом — прототип</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #1d2433; background: #f4f5f7; }
+  header { padding: 14px 20px; background: #0b4f6c; color: #fff; }
+  header h1 { margin: 0; font-size: 19px; font-weight: 600; }
+  header p { margin: 4px 0 0; font-size: 13px; opacity: .85; }
+  .wrap { display: grid; grid-template-columns: 340px 1fr; gap: 14px; padding: 14px; }
+  @media (max-width: 860px) { .wrap { grid-template-columns: 1fr; } #map { height: 60vh !important; } }
+  .panel { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .step { margin-bottom: 16px; }
+  .step h3 { margin: 0 0 6px; font-size: 14px; }
+  .step h3 span { display: inline-block; width: 22px; height: 22px; line-height: 22px; text-align: center; border-radius: 50%; background: #0b4f6c; color: #fff; font-size: 12px; margin-right: 6px; }
+  .hint { font-size: 12px; color: #667085; margin-top: 4px; line-height: 1.4; }
+  button { cursor: pointer; border: 0; border-radius: 7px; padding: 10px 14px; font-size: 14px; font-weight: 600; }
+  .primary { background: #0b7bb0; color: #fff; width: 100%; }
+  .primary:disabled { background: #9cc3d6; cursor: default; }
+  .secondary { background: #e6f0f5; color: #0b4f6c; }
+  input[type=range] { width: 100%; }
+  .levelrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+  .levelrow input[type=number] { width: 90px; padding: 7px; font-size: 15px; border: 1px solid #c9ced8; border-radius: 7px; }
+  .stats { font-size: 13px; line-height: 1.7; background: #f3f8fb; border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+  .stats b { font-variant-numeric: tabular-nums; }
+  #status { font-size: 13px; min-height: 18px; margin-top: 8px; }
+  #status.err { color: #b42318; }
+  #map { height: 600px; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,.08); cursor: crosshair; }
+  .legend { background: #fff; padding: 8px 10px; border-radius: 8px; font-size: 12px; line-height: 1.6; box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+  .sw { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+  .warn { font-size: 12px; color: #7a5b00; background: #fff8e1; border-radius: 8px; padding: 10px 12px; line-height: 1.45; }
+  .results { margin: 0 14px 14px; }
+  .results-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .results-head h2 { margin: 0; font-size: 17px; flex: 1; }
+  .tablebox { max-height: 480px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 7px 10px; border-bottom: 1px solid #eceef2; text-align: left; }
+  th { position: sticky; top: 0; background: #f8f9fb; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; color: #475467; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody tr:hover { background: #eef6fa; cursor: pointer; }
+  .empty { padding: 20px; text-align: center; color: #667085; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Прогноз затоплення за рельєфом — прототип</h1>
+  <p>Модель «заповнення низин»: вода піднімається на заданий рівень і займає всі нижчі ділянки, з'єднані з річкою.</p>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <div class="step">
+      <h3><span>1</span>Обери ділянку</h3>
+      <div class="hint">Покажи на екрані потрібну ділянку і натисни кнопку. Можна хоч усе водосховище: для великої ділянки сітка рельєфу буде грубішою (до ~50 м), для маленької — детальнішою (~12 м).</div>
+      <button class="primary" id="load" style="margin-top:8px">Завантажити рельєф ділянки</button>
+    </div>
+    <div class="step">
+      <h3><span>2</span>Клацни по воді</h3>
+      <div class="hint">Клацни по річці чи водосховищу всередині пунктирної рамки — звідти «піде» вода. Висота в цій точці стане звичайним рівнем води.</div>
+    </div>
+    <div class="step">
+      <h3><span>3</span>Задай підйом води</h3>
+      <input type="range" id="rise" min="0" max="15" step="0.1" value="2" disabled>
+      <div class="levelrow">
+        <input type="number" id="riseNum" min="0" max="50" step="0.1" value="2" disabled> <span>м вище звичайного рівня</span>
+      </div>
+      <div class="stats" id="stats">Рельєф ще не завантажено.</div>
+    </div>
+    <div class="step">
+      <h3><span>4</span>Адреси в зоні</h3>
+      <button class="primary" id="addr" disabled>Знайти адреси в зоні затоплення</button>
+    </div>
+    <div id="status"></div>
+    <div class="warn">⚠️ Це навчальний прототип. Висоти — із супутникових даних (крок ≈30 м, похибка кілька метрів, часто враховано дахи й дерева). Модель не бачить дамб, течії й часу заповнення. Не використовуй для реальних рішень.</div>
+  </div>
+  <div id="map"></div>
+</div>
+
+<div class="results panel">
+  <div class="results-head">
+    <h2 id="count">Адреси в зоні затоплення</h2>
+    <button class="secondary" id="copy">Копіювати</button>
+    <button class="secondary" id="csv">Завантажити CSV</button>
+  </div>
+  <div class="tablebox">
+    <table>
+      <thead><tr><th>№</th><th>Населений пункт</th><th>Вулиця</th><th>Будинок</th><th>Висота, м</th><th>Глибина води ≈, м</th></tr></thead>
+      <tbody id="tbody"><tr><td colspan="6" class="empty">Ще нічого не шукали.</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const statusEl = $("status");
+function setStatus(m, err) { statusEl.textContent = m; statusEl.className = err ? "err" : ""; }
+
+// ---------- Карта ----------
+const map = L.map("map").setView([49.40, 32.10], 12);
+const street = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+  maxZoom: 19, attribution: 'Карта &copy; Esri · Висоти: AWS Terrain Tiles (SRTM) · Адреси &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+}).addTo(map);
+const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", { maxZoom: 19, attribution: "Tiles &copy; Esri" });
+L.control.layers({ "Карта": street, "Супутник": sat }).addTo(map);
+
+const legend = L.control({ position: "bottomleft" });
+legend.onAdd = () => {
+  const d = L.DomUtil.create("div", "legend");
+  d.innerHTML = '<span class="sw" style="background:rgba(20,90,200,.75)"></span>Затоплена суша<br>' +
+                '<span class="sw" style="background:rgba(20,90,200,.25)"></span>Звичайна вода<br>' +
+                '<span id="hover">Наведи на карту — побачиш висоту</span>';
+  return d;
+};
+legend.addTo(map);
+
+// ---------- Рельєф (Terrarium: висота = R*256 + G + B/256 − 32768) ----------
+// Масштаб рельєфу підбирається під розмір ділянки: що більша ділянка, то грубіша сітка
+const TS = 256, MAX_PX = 14e6;
+let Z = 13, WORLD = 2 ** Z * TS;
+function setZoom(z) { Z = z; WORLD = 2 ** z * TS; }
+let queueBuf = null;
+
+// Шар-полотно поверх карти: малюємо зону прямо в canvas, без перетворення в картинку
+const CanvasOverlay = L.ImageOverlay.extend({
+  _initImage: function () {
+    const el = this._image = this._url;
+    L.DomUtil.addClass(el, "leaflet-image-layer");
+    if (this._zoomAnimated) L.DomUtil.addClass(el, "leaflet-zoom-animated");
+    el.onselectstart = L.Util.falseFn;
+    el.onmousemove = L.Util.falseFn;
+  }
+});
+let overlayCanvas = null, overlayCtx = null, overlayImg = null;
+const lon2x = lon => (lon + 180) / 360 * WORLD;
+const lat2y = lat => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * WORLD; };
+const x2lon = x => x / WORLD * 360 - 180;
+const y2lat = y => 180 / Math.PI * Math.atan(Math.sinh(Math.PI - 2 * Math.PI * y / WORLD));
+
+let area = null;   // {x0, y0, W, H, elev}
+let seed = null, seedMarker = null, base = 0;
+let flooded = null; // Uint8Array: 0 — сухо, 1 — звичайна вода, 2 — затоплена суша
+let overlay = null, frame = null, lastUrl = null;
+
+function loadTile(tx, ty) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => res(img);
+    img.onerror = () => rej(new Error("не завантажився шматок рельєфу"));
+    img.src = `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${Z}/${tx}/${ty}.png`;
+  });
+}
+
+$("load").addEventListener("click", async () => {
+  const b = map.getBounds();
+  const prevZ = area ? area.z : 13;
+  let tx0, tx1, ty0, ty1, nx, ny, z;
+  for (z = 13; z >= 9; z--) {
+    setZoom(z);
+    tx0 = Math.floor(lon2x(b.getWest()) / TS); tx1 = Math.floor(lon2x(b.getEast()) / TS);
+    ty0 = Math.floor(lat2y(b.getNorth()) / TS); ty1 = Math.floor(lat2y(b.getSouth()) / TS);
+    nx = tx1 - tx0 + 1; ny = ty1 - ty0 + 1;
+    if (nx * ny * TS * TS <= MAX_PX) break;
+  }
+  if (z < 9) { setZoom(prevZ); return setStatus("Ділянка завелика навіть для грубої сітки — наблизь карту трохи.", true); }
+  const mPx = 40075016.686 / WORLD * Math.cos(b.getCenter().lat * Math.PI / 180);
+  $("load").disabled = true;
+  let done = 0;
+  const total = nx * ny;
+  setStatus(`Завантажую рельєф… 0 з ${total}`);
+  try {
+    const jobs = [];
+    for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++)
+      jobs.push(loadTile(tx0 + i, ty0 + j).then(img => { setStatus(`Завантажую рельєф… ${++done} з ${total}`); return { img, i, j }; }));
+    const tiles = await Promise.all(jobs);
+    const W = nx * TS, H = ny * TS;
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    tiles.forEach(t => ctx.drawImage(t.img, t.i * TS, t.j * TS));
+    const px = ctx.getImageData(0, 0, W, H).data;
+    const elev = new Float32Array(W * H);
+    for (let k = 0, p = 0; k < elev.length; k++, p += 4) elev[k] = px[p] * 256 + px[p + 1] + px[p + 2] / 256 - 32768;
+    area = { x0: tx0 * TS, y0: ty0 * TS, W, H, elev, z };
+    flooded = null; seed = null;
+    if (seedMarker) { map.removeLayer(seedMarker); seedMarker = null; }
+    if (overlay) { map.removeLayer(overlay); overlay = null; }
+    overlayCanvas = overlayCtx = overlayImg = null;
+    if (frame) map.removeLayer(frame);
+    frame = L.rectangle(areaBounds(), { color: "#0b4f6c", weight: 1.5, dashArray: "6 5", fill: false, interactive: false }).addTo(map);
+    $("stats").textContent = "Тепер клацни по воді всередині рамки.";
+    queueBuf = null;
+    setStatus(`Рельєф завантажено: ${(W * H / 1e6).toFixed(1)} млн точок, крок сітки ≈ ${Math.round(mPx)} м.` +
+      (mPx > 20 ? " Для точних адрес краще завантажити меншу ділянку." : ""));
+  } catch (e) {
+    setZoom(prevZ);
+    setStatus("Не вдалося завантажити рельєф (" + e.message + "). Перевір інтернет або вимкни VPN.", true);
+  } finally { $("load").disabled = false; }
+});
+
+function areaBounds() {
+  return L.latLngBounds([y2lat(area.y0 + area.H), x2lon(area.x0)], [y2lat(area.y0), x2lon(area.x0 + area.W)]);
+}
+function toPix(lat, lng) {
+  const i = Math.floor(lon2x(lng) - area.x0), j = Math.floor(lat2y(lat) - area.y0);
+  return (i < 0 || j < 0 || i >= area.W || j >= area.H) ? -1 : j * area.W + i;
+}
+
+map.on("mousemove", e => {
+  const h = document.getElementById("hover");
+  if (!h) return;
+  if (!area) { h.textContent = "Наведи на карту — побачиш висоту"; return; }
+  const k = toPix(e.latlng.lat, e.latlng.lng);
+  h.textContent = k < 0 ? "Поза ділянкою" : `Висота тут: ${area.elev[k].toFixed(1)} м`;
+});
+
+map.on("click", e => {
+  if (!area) return setStatus("Спершу завантаж рельєф (крок 1).", true);
+  const k = toPix(e.latlng.lat, e.latlng.lng);
+  if (k < 0) return setStatus("Клацни всередині пунктирної рамки.", true);
+  // рівень води — медіана 5×5 навколо точки (згладжує шум)
+  const i0 = k % area.W, j0 = Math.floor(k / area.W), vals = [];
+  for (let dj = -2; dj <= 2; dj++) for (let di = -2; di <= 2; di++) {
+    const i = i0 + di, j = j0 + dj;
+    if (i >= 0 && j >= 0 && i < area.W && j < area.H) vals.push(area.elev[j * area.W + i]);
+  }
+  vals.sort((a, b) => a - b);
+  base = vals[Math.floor(vals.length / 2)];
+  seed = k;
+  if (seedMarker) map.removeLayer(seedMarker);
+  seedMarker = L.circleMarker(e.latlng, { radius: 6, color: "#fff", weight: 2, fillColor: "#0b7bb0", fillOpacity: 1 })
+    .bindTooltip(`Точка води: ${base.toFixed(1)} м`).addTo(map);
+  ["rise", "riseNum", "addr"].forEach(id => $(id).disabled = false);
+  setStatus("");
+  schedule();
+});
+
+// ---------- Моделювання: заповнення від точки води ----------
+let pending = false;
+function schedule() { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; simulate(); }); } }
+$("rise").addEventListener("input", () => { $("riseNum").value = $("rise").value; schedule(); });
+$("riseNum").addEventListener("input", () => { $("rise").value = $("riseNum").value; schedule(); });
+
+function simulate() {
+  if (!area || seed == null) return;
+  const rise = Math.max(0, parseFloat($("riseNum").value) || 0);
+  const level = base + rise, waterTol = base + 0.5;
+  const { W, H, elev } = area, N = W * H;
+  flooded = new Uint8Array(N);
+  if (!queueBuf || queueBuf.length < N) queueBuf = new Int32Array(N);
+  const queue = queueBuf;
+  let qh = 0, qt = 0;
+  flooded[seed] = elev[seed] > waterTol ? 2 : 1; queue[qt++] = seed;
+  const visit = n => {
+    if (flooded[n] || elev[n] > level) return;
+    flooded[n] = elev[n] > waterTol ? 2 : 1;
+    queue[qt++] = n;
+  };
+  while (qh < qt) {
+    const k = queue[qh++], i = k % W;
+    if (i > 0) visit(k - 1);
+    if (i < W - 1) visit(k + 1);
+    if (k >= W) visit(k - W);
+    if (k + W < N) visit(k + W);
+  }
+  // картинка + площа
+  if (!overlayCanvas) {
+    overlayCanvas = document.createElement("canvas");
+    overlayCanvas.width = W; overlayCanvas.height = H;
+    overlayCtx = overlayCanvas.getContext("2d");
+    overlayImg = overlayCtx.createImageData(W, H);
+    overlay = new CanvasOverlay(overlayCanvas, areaBounds(), { interactive: false }).addTo(map);
+  }
+  const d = overlayImg.data;
+  d.fill(0);
+  const mPerPxEq = 40075016.686 / WORLD;
+  let landArea = 0, landPx = 0, maxDepth = 0;
+  for (let j = 0; j < H; j++) {
+    const pxSize = mPerPxEq * Math.cos(y2lat(area.y0 + j + 0.5) * Math.PI / 180), a = pxSize * pxSize;
+    for (let i = 0; i < W; i++) {
+      const k = j * W + i, f = flooded[k];
+      if (!f) continue;
+      const p = k * 4;
+      d[p] = 20; d[p + 1] = 90; d[p + 2] = 200; d[p + 3] = f === 2 ? 190 : 64;
+      if (f === 2) { landArea += a; landPx++; maxDepth = Math.max(maxDepth, level - elev[k]); }
+    }
+  }
+  overlayCtx.putImageData(overlayImg, 0, 0);
+  $("stats").innerHTML =
+    `Звичайний рівень води: <b>${base.toFixed(1)} м</b><br>` +
+    `Рівень при підйомі: <b>${level.toFixed(1)} м</b> (+${rise.toFixed(1)} м)<br>` +
+    `Затоплена суша: <b>${(landArea / 1e6).toFixed(2)} км²</b><br>` +
+    `Найбільша глибина на суші: <b>${maxDepth.toFixed(1)} м</b>`;
+}
+
+// ---------- Адреси з OpenStreetMap ----------
+async function osmApiBox(s, w, n, e, depth = 0) {
+  const r = await fetch(`https://api.openstreetmap.org/api/0.6/map.json?bbox=${w},${s},${e},${n}`);
+  if (r.ok) return (await r.json()).elements;
+  if (r.status === 400 && depth < 4) {
+    const mLat = (s + n) / 2, mLon = (w + e) / 2;
+    return (await Promise.all([
+      osmApiBox(s, w, mLat, mLon, depth + 1), osmApiBox(s, mLon, mLat, e, depth + 1),
+      osmApiBox(mLat, w, n, mLon, depth + 1), osmApiBox(mLat, mLon, n, e, depth + 1)])).flat();
+  }
+  throw new Error("OSM API: HTTP " + r.status);
+}
+
+let rows = [];
+$("addr").addEventListener("click", async () => {
+  if (!flooded) return;
+  const { W, H } = area;
+  let iMin = W, iMax = -1, jMin = H, jMax = -1;
+  for (let k = 0; k < flooded.length; k++) if (flooded[k] === 2) {
+    const i = k % W, j = (k - i) / W;
+    if (i < iMin) iMin = i; if (i > iMax) iMax = i; if (j < jMin) jMin = j; if (j > jMax) jMax = j;
+  }
+  if (iMax < 0) return setStatus("Суша не затоплена — адрес немає.", false);
+  const s = y2lat(area.y0 + jMax + 1), n = y2lat(area.y0 + jMin), w = x2lon(area.x0 + iMin), e = x2lon(area.x0 + iMax + 1);
+  const step = 0.009, ny = Math.ceil((n - s) / step), nx = Math.ceil((e - w) / (step * 1.5));
+  const hy = (n - s) / ny, hx = (e - w) / nx;
+  const boxes = [];
+  for (let a = 0; a < ny; a++) for (let b = 0; b < nx; b++) {
+    const bs = s + a * hy, bw = w + b * hx;
+    // пропускаємо квадрати без затоплення
+    const i0 = Math.max(0, Math.floor(lon2x(bw) - area.x0)), i1 = Math.min(W - 1, Math.floor(lon2x(bw + hx) - area.x0));
+    const j0 = Math.max(0, Math.floor(lat2y(bs + hy) - area.y0)), j1 = Math.min(H - 1, Math.floor(lat2y(bs) - area.y0));
+    let any = false;
+    for (let j = j0; j <= j1 && !any; j += 2) for (let i = i0; i <= i1; i += 2) if (flooded[j * W + i] === 2) { any = true; break; }
+    if (any) boxes.push([bs, bw, bs + hy, bw + hx]);
+  }
+  if (boxes.length > 60) return setStatus(`Зона завелика для пошуку адрес (${boxes.length} частин). Зменш підйом води або ділянку.`, true);
+
+  $("addr").disabled = true;
+  const t0 = Date.now();
+  let done = 0;
+  setStatus(`Шукаю адреси… частина 0 з ${boxes.length}`);
+  try {
+    const nodes = new Map(), found = new Map(), queue = boxes.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const els = await osmApiBox(...queue.shift());
+        for (const el of els) if (el.type === "node") nodes.set(el.id, el);
+        for (const el of els) if (el.tags && el.tags["addr:housenumber"]) found.set(el.type + el.id, el);
+        setStatus(`Шукаю адреси… частина ${++done} з ${boxes.length}`);
+      }
+    };
+    await Promise.all([worker(), worker()]);
+    const level = base + (parseFloat($("riseNum").value) || 0);
+    const seen = new Set();
+    rows = [];
+    for (const el of found.values()) {
+      let lat = el.lat, lon = el.lon;
+      if (el.type === "way") {
+        const pts = el.nodes.map(id => nodes.get(id)).filter(Boolean);
+        if (!pts.length) continue;
+        lat = pts.reduce((a, p) => a + p.lat, 0) / pts.length;
+        lon = pts.reduce((a, p) => a + p.lon, 0) / pts.length;
+      }
+      if (lat == null) continue;
+      const k = toPix(lat, lon);
+      if (k < 0 || flooded[k] !== 2) continue;
+      const t = el.tags;
+      const city = t["addr:city"] || (t["addr:street"] ? t["addr:place"] : "") || "";
+      const street = t["addr:street"] || t["addr:place"] || "";
+      const house = t["addr:housenumber"];
+      const key = city + "|" + street + "|" + house;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({ city, street, house, h: area.elev[k], depth: level - area.elev[k], lat, lon });
+    }
+    rows.sort((a, b) => b.depth - a.depth);
+    render();
+    setStatus(`Готово: ${rows.length} адрес у зоні затоплення за ${((Date.now() - t0) / 1000).toFixed(1)} с.`);
+  } catch (e) {
+    setStatus("Не вдалося отримати адреси (" + e.message + ").", true);
+  } finally { $("addr").disabled = false; }
+});
+
+function esc(s) { return String(s).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch])); }
+function render() {
+  $("count").textContent = `Адреси в зоні затоплення (${rows.length})`;
+  $("tbody").innerHTML = rows.length ? rows.map((x, i) => `<tr data-lat="${x.lat}" data-lon="${x.lon}">
+    <td class="num">${i + 1}</td><td>${esc(x.city || "—")}</td><td>${esc(x.street || "—")}</td><td>${esc(x.house)}</td>
+    <td class="num">${x.h.toFixed(1)}</td><td class="num">${x.depth.toFixed(1)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">У зоні затоплення адрес не знайдено.</td></tr>`;
+}
+$("tbody").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-lat]");
+  if (!tr) return;
+  map.setView([+tr.dataset.lat, +tr.dataset.lon], 17);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
+function toTable(sep) {
+  const q = v => sep === "," ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+  return [["№", "Населений пункт", "Вулиця", "Будинок", "Висота, м", "Глибина, м", "Широта", "Довгота"].map(q).join(sep)]
+    .concat(rows.map((x, i) => [i + 1, x.city, x.street, x.house, x.h.toFixed(1), x.depth.toFixed(1), x.lat.toFixed(6), x.lon.toFixed(6)].map(q).join(sep))).join("\n");
+}
+$("copy").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText(toTable("\t")); setStatus("Таблицю скопійовано."); } catch { setStatus("Не вийшло скопіювати.", true); }
+});
+$("csv").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob(["﻿" + toTable(",")], { type: "text/csv;charset=utf-8" }));
+  a.download = "zatoplennia-adresy.csv"; a.click();
+});
+</script>
+</body>
+</html>
