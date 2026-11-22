@@ -64,7 +64,14 @@
       <div class="hint">Клацни по річці чи водосховищу всередині пунктирної рамки — звідти «піде» вода. Висота в цій точці стане звичайним рівнем води.</div>
     </div>
     <div class="step">
-      <h3><span>3</span>Задай підйом води</h3>
+      <h3><span>3</span>Задай рівні води</h3>
+      <div class="levelrow">
+        <span>Звичайний рівень:</span>
+        <input type="number" id="baseNum" step="0.01" disabled> <span>м</span>
+      </div>
+      <div class="hint">З даних рельєфу: <b id="demBase">—</b> м (знімок 2000 року). Можна вписати сьогоднішній рівень з гідропоста, і розрахунок піде від нього.
+        <a href="#" id="baseReset" style="display:none">Повернути з рельєфу</a></div>
+      <div style="margin-top:10px;font-size:13px">Підйом води:</div>
       <input type="range" id="rise" min="0" max="15" step="0.1" value="2" disabled>
       <div class="levelrow">
         <input type="number" id="riseNum" min="0" max="50" step="0.1" value="2" disabled> <span>м вище звичайного рівня</span>
@@ -229,12 +236,15 @@ map.on("click", e => {
     if (i >= 0 && j >= 0 && i < area.W && j < area.H) vals.push(area.elev[j * area.W + i]);
   }
   vals.sort((a, b) => a - b);
-  base = vals[Math.floor(vals.length / 2)];
+  demBase = vals[Math.floor(vals.length / 2)];
+  if (!manualBase) base = demBase;
+  $("demBase").textContent = demBase.toFixed(1);
+  $("baseNum").value = base.toFixed(2);
   seed = k;
   if (seedMarker) map.removeLayer(seedMarker);
   seedMarker = L.circleMarker(e.latlng, { radius: 6, color: "#fff", weight: 2, fillColor: "#0b7bb0", fillOpacity: 1 })
     .bindTooltip(`Точка води: ${base.toFixed(1)} м`).addTo(map);
-  ["rise", "riseNum", "addr"].forEach(id => $(id).disabled = false);
+  ["rise", "riseNum", "addr", "baseNum"].forEach(id => $(id).disabled = false);
   setStatus("");
   schedule();
 });
@@ -244,6 +254,22 @@ let pending = false;
 function schedule() { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; simulate(); }); } }
 $("rise").addEventListener("input", () => { $("riseNum").value = $("rise").value; schedule(); });
 $("riseNum").addEventListener("input", () => { $("rise").value = $("riseNum").value; schedule(); });
+let demBase = null, manualBase = false;
+$("baseNum").addEventListener("input", () => {
+  const v = parseFloat($("baseNum").value);
+  if (!isFinite(v)) return;
+  base = v;
+  manualBase = Math.abs(v - demBase) > 0.005;
+  $("baseReset").style.display = manualBase ? "inline" : "none";
+  schedule();
+});
+$("baseReset").addEventListener("click", e => {
+  e.preventDefault();
+  manualBase = false; base = demBase;
+  $("baseNum").value = base.toFixed(2);
+  $("baseReset").style.display = "none";
+  schedule();
+});
 
 function simulate() {
   if (!area || seed == null) return;
@@ -291,13 +317,29 @@ function simulate() {
   }
   overlayCtx.putImageData(overlayImg, 0, 0);
   $("stats").innerHTML =
-    `Звичайний рівень води: <b>${base.toFixed(1)} м</b><br>` +
+    `Звичайний рівень води: <b>${base.toFixed(2)} м</b> ${manualBase ? "(вписано вручну)" : "(з рельєфу)"}<br>` +
     `Рівень при підйомі: <b>${level.toFixed(1)} м</b> (+${rise.toFixed(1)} м)<br>` +
     `Затоплена суша: <b>${(landArea / 1e6).toFixed(2)} км²</b><br>` +
     `Найбільша глибина на суші: <b>${maxDepth.toFixed(1)} м</b>`;
 }
 
 // ---------- Адреси з OpenStreetMap ----------
+const MAX_BOXES = 500;
+const OVERPASS = [
+  "https://overpass-api.de/api/interpreter",
+  "https://overpass.private.coffee/api/interpreter",
+  "https://lz4.overpass-api.de/api/interpreter"
+];
+function overpass(query, timeoutMs) {
+  const ctrls = OVERPASS.map(() => new AbortController());
+  const timer = setTimeout(() => ctrls.forEach(c => c.abort()), timeoutMs);
+  const tries = OVERPASS.map((url, i) =>
+    fetch(url, { method: "POST", body: "data=" + encodeURIComponent(query), signal: ctrls[i].signal,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" } })
+      .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(d => { ctrls.forEach((c, j) => j !== i && c.abort()); return d; }));
+  return Promise.any(tries).finally(() => clearTimeout(timer));
+}
 async function osmApiBox(s, w, n, e, depth = 0) {
   const r = await fetch(`https://api.openstreetmap.org/api/0.6/map.json?bbox=${w},${s},${e},${n}`);
   if (r.ok) return (await r.json()).elements;
@@ -333,29 +375,45 @@ $("addr").addEventListener("click", async () => {
     for (let j = j0; j <= j1 && !any; j += 2) for (let i = i0; i <= i1; i += 2) if (flooded[j * W + i] === 2) { any = true; break; }
     if (any) boxes.push([bs, bw, bs + hy, bw + hx]);
   }
-  if (boxes.length > 60) return setStatus(`Зона завелика для пошуку адрес (${boxes.length} частин). Зменш підйом води або ділянку.`, true);
+  if (boxes.length > MAX_BOXES) return setStatus(`Зона завелика для пошуку адрес (${boxes.length} частин, максимум ${MAX_BOXES}). Зменш підйом води або ділянку.`, true);
 
   $("addr").disabled = true;
   const t0 = Date.now();
-  let done = 0;
-  setStatus(`Шукаю адреси… частина 0 з ${boxes.length}`);
+  const nodes = new Map(), found = new Map();
   try {
-    const nodes = new Map(), found = new Map(), queue = boxes.slice();
-    const worker = async () => {
-      while (queue.length) {
-        const els = await osmApiBox(...queue.shift());
-        for (const el of els) if (el.type === "node") nodes.set(el.id, el);
-        for (const el of els) if (el.tags && el.tags["addr:housenumber"]) found.set(el.type + el.id, el);
-        setStatus(`Шукаю адреси… частина ${++done} з ${boxes.length}`);
-      }
-    };
-    await Promise.all([worker(), worker()]);
+    let viaOverpass = false;
+    // Велика зона: спершу Overpass — уся зона одним запитом
+    if (boxes.length > 30) {
+      const tick = setInterval(() => setStatus(`Зона велика — питаю сервер Overpass… ${Math.round((Date.now() - t0) / 1000)} с`), 1000);
+      try {
+        const d = await overpass(`[out:json][timeout:170];nwr["addr:housenumber"](${s},${w},${n},${e});out center tags qt;`, 60000);
+        for (const el of d.elements) found.set(el.type + el.id, el);
+        viaOverpass = true;
+      } catch (err) { /* переходимо на запасний спосіб */ }
+      finally { clearInterval(tick); }
+    }
+    if (!viaOverpass) {
+      let done = 0;
+      const queue = boxes.slice();
+      const mins = Math.max(1, Math.round(boxes.length * 1.2 / 3 / 60));
+      setStatus(`Шукаю адреси… частина 0 з ${boxes.length}`);
+      const worker = async () => {
+        while (queue.length) {
+          const els = await osmApiBox(...queue.shift());
+          for (const el of els) if (el.type === "node") nodes.set(el.id, el);
+          for (const el of els) if (el.tags && el.tags["addr:housenumber"]) found.set(el.type + el.id, el);
+          done++;
+          setStatus(`Шукаю адреси… частина ${done} з ${boxes.length}` + (boxes.length > 60 ? ` (це може зайняти ~${mins} хв)` : ""));
+        }
+      };
+      await Promise.all([worker(), worker(), worker()]);
+    }
     const level = base + (parseFloat($("riseNum").value) || 0);
     const seen = new Set();
     rows = [];
     for (const el of found.values()) {
-      let lat = el.lat, lon = el.lon;
-      if (el.type === "way") {
+      let lat = el.lat ?? el.center?.lat, lon = el.lon ?? el.center?.lon;
+      if (el.type === "way" && lat == null) {
         const pts = el.nodes.map(id => nodes.get(id)).filter(Boolean);
         if (!pts.length) continue;
         lat = pts.reduce((a, p) => a + p.lat, 0) / pts.length;
