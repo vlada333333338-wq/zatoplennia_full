@@ -23,6 +23,11 @@
   .primary { background: #0b7bb0; color: #fff; width: 100%; }
   .primary:disabled { background: #9cc3d6; cursor: default; }
   .secondary { background: #e6f0f5; color: #0b4f6c; }
+  .secondary.active { background: #c2410c; color: #fff; }
+  .btnrow { display: flex; gap: 8px; margin-top: 8px; }
+  .btnrow button { flex: 1; padding: 10px 8px; }
+  .btnrow button:disabled, .sel:disabled { opacity: .5; cursor: default; }
+  .sel { width: 100%; padding: 9px; font-size: 14px; border: 1px solid #c9ced8; border-radius: 7px; background: #fff; }
   input[type=range] { width: 100%; }
   .levelrow { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
   .levelrow input[type=number] { width: 90px; padding: 7px; font-size: 15px; border: 1px solid #c9ced8; border-radius: 7px; }
@@ -56,8 +61,12 @@
   <div class="panel">
     <div class="step">
       <h3><span>1</span>Обери ділянку</h3>
-      <div class="hint">Покажи на екрані потрібну ділянку і натисни кнопку. Можна хоч усе водосховище: для великої ділянки сітка рельєфу буде грубішою (до ~50 м), для маленької — детальнішою (~12 м).</div>
-      <button class="primary" id="load" style="margin-top:8px">Завантажити рельєф ділянки</button>
+      <select id="region" class="sel"><option value="">Завантажую список областей…</option></select>
+      <div class="btnrow">
+        <button class="secondary" id="rectBtn">▭ Виділити рамкою</button>
+        <button class="secondary" id="load">⬚ Весь екран</button>
+      </div>
+      <div class="hint">Обери область зі списку, протягни рамку мишкою чи пальцем після кнопки «Виділити рамкою» або візьми все, що видно на екрані. Що більша ділянка, то грубіша сітка рельєфу (від ~12 м до ~200 м).</div>
     </div>
     <div class="step">
       <h3><span>2</span>Клацни по воді</h3>
@@ -163,8 +172,9 @@ function loadTile(tx, ty) {
   });
 }
 
-$("load").addEventListener("click", async () => {
-  const b = map.getBounds();
+function setBusy(on) { ["load", "rectBtn", "region"].forEach(id => $(id).disabled = on); }
+
+async function loadArea(b, geom) {
   const prevZ = area ? area.z : 13;
   let tx0, tx1, ty0, ty1, nx, ny, z;
   for (z = 13; z >= 9; z--) {
@@ -176,7 +186,7 @@ $("load").addEventListener("click", async () => {
   }
   if (z < 9) { setZoom(prevZ); return setStatus("Ділянка завелика навіть для грубої сітки — наблизь карту трохи.", true); }
   const mPx = 40075016.686 / WORLD * Math.cos(b.getCenter().lat * Math.PI / 180);
-  $("load").disabled = true;
+  setBusy(true);
   let done = 0;
   const total = nx * ny;
   setStatus(`Завантажую рельєф… 0 з ${total}`);
@@ -192,21 +202,110 @@ $("load").addEventListener("click", async () => {
     const px = ctx.getImageData(0, 0, W, H).data;
     const elev = new Float32Array(W * H);
     for (let k = 0, p = 0; k < elev.length; k++, p += 4) elev[k] = px[p] * 256 + px[p + 1] + px[p + 2] / 256 - 32768;
+    // Якщо обрано область — все поза її межами робимо «нескінченно високим», щоб вода туди не йшла
+    if (geom) {
+      const mc2 = document.createElement("canvas"); mc2.width = W; mc2.height = H;
+      const mx = mc2.getContext("2d", { willReadFrequently: true });
+      mx.beginPath();
+      const polys = geom.type === "Polygon" ? [geom.coordinates] : geom.coordinates;
+      for (const poly of polys) for (const ring of poly) {
+        ring.forEach(([lon, lat], idx) => {
+          const X = lon2x(lon) - tx0 * TS, Y = lat2y(lat) - ty0 * TS;
+          idx ? mx.lineTo(X, Y) : mx.moveTo(X, Y);
+        });
+        mx.closePath();
+      }
+      mx.fill("evenodd");
+      const md = mx.getImageData(0, 0, W, H).data;
+      for (let k = 0; k < elev.length; k++) if (md[k * 4 + 3] < 128) elev[k] = Infinity;
+    }
     area = { x0: tx0 * TS, y0: ty0 * TS, W, H, elev, z };
     flooded = null; seed = null;
     if (seedMarker) { map.removeLayer(seedMarker); seedMarker = null; }
     if (overlay) { map.removeLayer(overlay); overlay = null; }
     overlayCanvas = overlayCtx = overlayImg = null;
-    if (frame) map.removeLayer(frame);
-    frame = L.rectangle(areaBounds(), { color: "#0b4f6c", weight: 1.5, dashArray: "6 5", fill: false, interactive: false }).addTo(map);
-    $("stats").textContent = "Тепер клацни по воді всередині рамки.";
+    if (frame) { map.removeLayer(frame); frame = null; }
+    if (!geom) frame = L.rectangle(areaBounds(), { color: "#0b4f6c", weight: 1.5, dashArray: "6 5", fill: false, interactive: false }).addTo(map);
+    $("stats").textContent = geom ? "Тепер клацни по воді всередині області." : "Тепер клацни по воді всередині рамки.";
     queueBuf = null;
     setStatus(`Рельєф завантажено: ${(W * H / 1e6).toFixed(1)} млн точок, крок сітки ≈ ${Math.round(mPx)} м.` +
       (mPx > 20 ? " Для точних адрес краще завантажити меншу ділянку." : ""));
   } catch (e) {
     setZoom(prevZ);
     setStatus("Не вдалося завантажити рельєф (" + e.message + "). Перевір інтернет або вимкни VPN.", true);
-  } finally { $("load").disabled = false; }
+  } finally { setBusy(false); }
+}
+
+// --- Вибір ділянки: весь екран ---
+$("load").addEventListener("click", () => {
+  clearRegion();
+  loadArea(map.getBounds(), null);
+});
+
+// --- Вибір ділянки: рамка мишкою / пальцем ---
+let drawing = false, drawStart = null, drawRect = null, suppressClick = false;
+const mapEl = map.getContainer();
+function stopDrawing() {
+  drawing = false; drawStart = null;
+  $("rectBtn").classList.remove("active");
+  map.dragging.enable();
+  mapEl.style.touchAction = "";
+  if (drawRect) { map.removeLayer(drawRect); drawRect = null; }
+}
+$("rectBtn").addEventListener("click", () => {
+  if (drawing) { stopDrawing(); setStatus(""); return; }
+  drawing = true;
+  $("rectBtn").classList.add("active");
+  map.dragging.disable();
+  mapEl.style.touchAction = "none";
+  setStatus("Протягни рамку на карті мишкою або пальцем.");
+});
+mapEl.addEventListener("pointerdown", e => {
+  if (!drawing || e.button > 0 || e.target.closest(".leaflet-control")) return;
+  drawStart = map.mouseEventToLatLng(e);
+  try { mapEl.setPointerCapture(e.pointerId); } catch (err) {}
+  if (drawRect) map.removeLayer(drawRect);
+  drawRect = L.rectangle([drawStart, drawStart], { color: "#c2410c", weight: 2, dashArray: "4 4", fillOpacity: .08, interactive: false }).addTo(map);
+  e.preventDefault();
+});
+mapEl.addEventListener("pointermove", e => {
+  if (drawing && drawStart) drawRect.setBounds(L.latLngBounds(drawStart, map.mouseEventToLatLng(e)));
+});
+mapEl.addEventListener("pointerup", e => {
+  if (!drawing || !drawStart) return;
+  const b = L.latLngBounds(drawStart, map.mouseEventToLatLng(e));
+  suppressClick = true; setTimeout(() => suppressClick = false, 400);
+  stopDrawing();
+  const p1 = map.latLngToContainerPoint(b.getNorthWest()), p2 = map.latLngToContainerPoint(b.getSouthEast());
+  if (Math.abs(p2.x - p1.x) < 10 || Math.abs(p2.y - p1.y) < 10) return setStatus("Рамка замала — натисни кнопку ще раз і протягни більшу.", true);
+  clearRegion();
+  loadArea(b, null);
+});
+
+// --- Вибір ділянки: область зі списку ---
+let regions = [], regionLayer = null;
+function clearRegion() {
+  if (regionLayer) { map.removeLayer(regionLayer); regionLayer = null; }
+  $("region").value = "";
+}
+fetch("https://cdn.jsdelivr.net/gh/EugeneBorshch/ukraine_geojson@master/UA_FULL_Ukraine.geojson")
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(g => {
+    regions = g.features.filter(f => f.properties && f.properties.name)
+      .sort((a, b) => a.properties.name.localeCompare(b.properties.name, "uk"));
+    $("region").innerHTML = '<option value="">— Обрати область —</option>' +
+      regions.map((f, i) => `<option value="${i}">${esc(f.properties.name)}</option>`).join("");
+  })
+  .catch(() => { $("region").innerHTML = '<option value="">Список областей не завантажився</option>'; });
+$("region").addEventListener("change", () => {
+  const v = $("region").value;
+  if (v === "") return;
+  const f = regions[+v];
+  if (regionLayer) map.removeLayer(regionLayer);
+  regionLayer = L.geoJSON(f, { style: { color: "#c2410c", weight: 2, fill: false }, interactive: false }).addTo(map);
+  const b = regionLayer.getBounds();
+  map.fitBounds(b);
+  loadArea(b, f.geometry);
 });
 
 function areaBounds() {
@@ -222,18 +321,19 @@ map.on("mousemove", e => {
   if (!h) return;
   if (!area) { h.textContent = "Наведи на карту — побачиш висоту"; return; }
   const k = toPix(e.latlng.lat, e.latlng.lng);
-  h.textContent = k < 0 ? "Поза ділянкою" : `Висота тут: ${area.elev[k].toFixed(1)} м`;
+  h.textContent = (k < 0 || !isFinite(area.elev[k])) ? "Поза ділянкою" : `Висота тут: ${area.elev[k].toFixed(1)} м`;
 });
 
 map.on("click", e => {
-  if (!area) return setStatus("Спершу завантаж рельєф (крок 1).", true);
+  if (drawing || suppressClick) return;
+  if (!area) return setStatus("Спершу обери ділянку (крок 1).", true);
   const k = toPix(e.latlng.lat, e.latlng.lng);
-  if (k < 0) return setStatus("Клацни всередині пунктирної рамки.", true);
+  if (k < 0 || !isFinite(area.elev[k])) return setStatus("Клацни всередині обраної ділянки.", true);
   // рівень води — медіана 5×5 навколо точки (згладжує шум)
   const i0 = k % area.W, j0 = Math.floor(k / area.W), vals = [];
   for (let dj = -2; dj <= 2; dj++) for (let di = -2; di <= 2; di++) {
     const i = i0 + di, j = j0 + dj;
-    if (i >= 0 && j >= 0 && i < area.W && j < area.H) vals.push(area.elev[j * area.W + i]);
+    if (i >= 0 && j >= 0 && i < area.W && j < area.H && isFinite(area.elev[j * area.W + i])) vals.push(area.elev[j * area.W + i]);
   }
   vals.sort((a, b) => a - b);
   demBase = vals[Math.floor(vals.length / 2)];
